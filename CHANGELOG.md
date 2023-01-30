@@ -7,6 +7,7 @@
 ## dbt-spark 1.4.1 - January 27, 2023
 ### Dependencies
 - Allow thrift 0.16.0 ([#606](https://github.com/dbt-labs/dbt-spark/issues/606), [#605](https://github.com/dbt-labs/dbt-spark/pull/605))
+## dbt-spark 1.4.1-rc1 - January 30, 2023
 
 ## dbt-spark 1.4.0 - January 25, 2023
 ### Features

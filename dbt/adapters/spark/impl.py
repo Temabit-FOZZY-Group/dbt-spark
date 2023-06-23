@@ -338,10 +338,7 @@ class SparkAdapter(SQLAdapter):
         return columns
 
     def _get_columns_for_catalog(self, relation: SparkRelation) -> Iterable[Dict[str, Any]]:
-        if relation.is_delta:
-            columns = self.get_columns_in_relation(relation)
-        else:
-            columns = self.parse_columns_from_information(relation)
+        columns = self.parse_columns_from_information(relation)
         for column in columns:
             # convert SparkColumns into catalog dicts
             as_dict = column.to_column_dict()

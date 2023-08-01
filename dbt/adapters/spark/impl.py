@@ -12,7 +12,9 @@ import dbt.exceptions
 
 from dbt.adapters.base import AdapterConfig, PythonJobHelper
 from dbt.adapters.base.impl import catch_as_completed
+from dbt.adapters.cache import _make_ref_key_dict
 from dbt.contracts.connection import AdapterResponse
+from dbt.contracts.graph.manifest import Manifest
 from dbt.adapters.sql import SQLAdapter
 from dbt.adapters.spark import SparkConnectionManager
 from dbt.adapters.spark import SparkRelation
@@ -24,8 +26,10 @@ from dbt.adapters.spark.python_submissions import (
 from dbt.adapters.base import BaseRelation
 from dbt.clients.agate_helper import DEFAULT_TYPE_TESTER
 from dbt.events import AdapterLogger
+from dbt.events.functions import fire_event
+from dbt.events.types import ListRelations
 from dbt.flags import get_flags
-from dbt.utils import executor, AttrDict
+from dbt.utils import cast_to_str, executor, AttrDict
 
 logger = AdapterLogger("Spark")
 
@@ -200,6 +204,99 @@ class SparkAdapter(SQLAdapter):
                 is_hudi=is_hudi,
             )
             relations.append(relation)
+
+        return relations
+
+    def _build_schemas_with_identifier(self, relations: List) -> List[BaseRelation]:
+        """Helper function to build relation list with identifier.
+        """
+        # group up relations by common schema
+        import collections
+        relmap = collections.defaultdict(list)
+        for r in relations:
+            relmap[r.schema].append(r)
+        # create a single relation for each schema
+        # set the identifier to a '|' delimited string of relation names, or '*'
+        schemas = [
+            self.Relation.create(
+                schema=schema,
+                identifier=(
+                    '|'.join(r.identifier for r in rels)
+                    # there's probably some limit to how many we can include by name
+                    if len(rels) < 100 else '*'
+                )
+            ) for schema, rels in relmap.items()
+        ]
+        return schemas
+
+    def _get_cache_schemas(self, manifest: Manifest) -> List[BaseRelation]:
+        """Get the list of schema relations that the cache logic needs to
+        populate. This means only executable nodes are included.
+        """
+        # the cache only cares about executable nodes
+        relations = [
+            self.Relation.create_from(self.config, node)  # keep the identifier
+            for node in manifest.nodes.values()
+            if (
+                node.is_relational and not node.is_ephemeral_model
+            )
+        ]
+        return self._build_schemas_with_identifier(relations)
+
+    def _get_source_schema_relations(self, schema: str, manifest: Manifest) -> BaseRelation:
+        """Get the list of relations for given schema from manifest.
+        """
+        schema_relations = [
+            self.Relation.create_from(self.config, node)  # keep the identifier
+            for node in manifest.sources.values()
+            if (
+                node.schema == schema and not node.is_ephemeral_model
+            )
+        ]
+        # only return the first element because one schema is provided
+        return self._build_schemas_with_identifier(schema_relations)[0]
+
+    def list_relations(
+        self,
+        database: Optional[str],
+        schema: str,
+        manifest: Optional[Manifest] = None
+    ) -> List[BaseRelation]:
+        if self._schema_is_cached(database, schema):
+            return self.cache.get_relations(database, schema)
+
+        if manifest:
+            schema_relation = self._get_source_schema_relations(schema, manifest)
+        else:
+            schema_relation = self.Relation.create(
+                database=database,
+                schema=schema,
+                identifier="",
+                quote_policy=self.config.quoting,
+            ).without_identifier()
+
+        # we can't build the relations cache because we don't have a
+        # manifest so we can't run any operations.
+        relations = self.list_relations_without_caching(schema_relation)
+
+        # if the cache is already populated, add this schema in
+        # otherwise, skip updating the cache and just ignore
+        if self.cache:
+            for relation in relations:
+                self.cache.add(relation)
+            if not relations:
+                # it's possible that there were no relations in some schemas. We want
+                # to insert the schemas we query into the cache's `.schemas` attribute
+                # so we can check it later
+                self.cache.update_schemas([(database, schema)])
+
+        fire_event(
+            ListRelations(
+                database=cast_to_str(database),
+                schema=schema,
+                relations=[_make_ref_key_dict(x) for x in relations],
+            )
+        )
 
         return relations
 
@@ -392,7 +489,8 @@ class SparkAdapter(SQLAdapter):
         schema = list(schemas)[0]
 
         columns: List[Dict[str, Any]] = []
-        for relation in self.list_relations(database, schema):
+
+        for relation in self.list_relations(database, schema, manifest):
             logger.debug("Getting table schema for relation {}", str(relation))
             columns.extend(self._get_columns_for_catalog(relation))
         return agate.Table.from_object(columns, column_types=DEFAULT_TYPE_TESTER)

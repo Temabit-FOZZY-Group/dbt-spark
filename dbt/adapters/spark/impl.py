@@ -1,6 +1,7 @@
 import re
 from concurrent.futures import Future
 from dataclasses import dataclass
+from itertools import chain
 from typing import Any, Dict, Iterable, List, Optional, Union, Type, Tuple, Callable
 from typing_extensions import TypeAlias
 
@@ -243,12 +244,12 @@ class SparkAdapter(SQLAdapter):
         ]
         return self._build_schemas_with_identifier(relations)
 
-    def _get_source_schema_relations(self, schema: str, manifest: Manifest) -> BaseRelation:
+    def _get_schema_relations(self, schema: str, manifest: Manifest) -> BaseRelation:
         """Get the list of relations for given schema from manifest.
         """
         schema_relations = [
             self.Relation.create_from(self.config, node)  # keep the identifier
-            for node in manifest.sources.values()
+            for node in chain(manifest.sources.values(), manifest.nodes.values())
             if (
                 node.schema == schema and not node.is_ephemeral_model
             )
@@ -266,7 +267,7 @@ class SparkAdapter(SQLAdapter):
             return self.cache.get_relations(database, schema)
 
         if manifest:
-            schema_relation = self._get_source_schema_relations(schema, manifest)
+            schema_relation = self._get_schema_relations(schema, manifest)
         else:
             schema_relation = self.Relation.create(
                 database=database,

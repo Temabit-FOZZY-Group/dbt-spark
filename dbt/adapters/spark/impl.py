@@ -267,7 +267,11 @@ class SparkAdapter(SQLAdapter):
             return self.cache.get_relations(database, schema)
 
         if manifest:
-            schema_relation = self._get_schema_relations(schema, manifest)
+            try:
+                schema_relation = self._get_schema_relations(schema, manifest)
+            except IndexError:
+                logger.error(f"schema_relation isn't found in manifest for {schema=}")
+                raise
         else:
             schema_relation = self.Relation.create(
                 database=database,
